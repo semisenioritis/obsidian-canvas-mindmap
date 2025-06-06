@@ -1,134 +1,163 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { Plugin, WorkspaceLeaf } from "obsidian";
+import { requireApiVersion } from "obsidian";
+import { addEdge, addNode, buildTrees, createChildFileNode, random } from "utils";
+import type { CanvasNode } from 'obsidian';
 
-// Remember to rename these classes and interfaces!
 
-interface MyPluginSettings {
-	mySetting: string;
+export default class CanvasBrainstormPlugin extends Plugin {
+	onload() {
+		this.registerEvent(
+			this.app.workspace.on("active-leaf-change", async (leaf: WorkspaceLeaf | null) => {
+				if (!leaf) return;
+				if (leaf.view?.getViewType() !== "canvas") return;
+
+				await this.injectButtonWhenReady(leaf);
+			})
+		);
+	}
+
+	async injectButtonWhenReady(leaf: WorkspaceLeaf) {
+		const container = leaf.view.containerEl;
+
+		const tryInject = () => {
+			const controlGroups = container.querySelectorAll(".canvas-control-group");
+			if (controlGroups.length === 0) return false;
+
+			const targetGroup = controlGroups[controlGroups.length - 1];
+			if (targetGroup.querySelector(".brainstorm-button")) return true;
+
+			const button = document.createElement("button");
+			button.textContent = "🧠";
+			button.className = "brainstorm-button";
+      button.onclick = () => this.onBrainstormClick(leaf.view);
+
+
+
+
+			targetGroup.appendChild(button);
+			return true;
+		};
+
+		let attempts = 0;
+		const interval = setInterval(() => {
+			if (tryInject() || attempts++ > 10) clearInterval(interval);
+		}, 100);
+
+		this.injectNavButtons(container);
+	}
+
+	injectNavButtons(container: HTMLElement) {
+		if (container.querySelector(".brainstorm-nav")) return;
+
+    console.log("Injecting navigation buttons");
+    console.log("Container:", container);
+
+		const nav = document.createElement("div");
+		nav.className = "brainstorm-nav";
+		nav.style.position = "fixed";
+		nav.style.bottom = "var(--size-4-5)";
+		nav.style.right = "var(--size-4-2)";
+		nav.style.display = "grid";
+		nav.style.gridTemplateColumns = "40px 40px 40px";
+		nav.style.gridTemplateRows = "40px 40px";
+		nav.style.gap = "5px";
+		nav.style.zIndex = "9999";
+
+		const makeBtn = (label: string, row: number, col: number, action: () => void) => {
+			const btn = document.createElement("button");
+			btn.textContent = label;
+			btn.style.gridRow = `${row}`;
+			btn.style.gridColumn = `${col}`;
+			btn.onclick = action;
+			nav.appendChild(btn);
+		};
+
+		makeBtn("⬆️", 1, 2, () => console.log("up"));
+		makeBtn("⬅️", 2, 1, () => console.log("left"));
+		makeBtn("⬇️", 2, 2, () => console.log("down"));
+		makeBtn("➡️", 2, 3, () => console.log("right"));
+
+		container.appendChild(nav);
+	}
+
+
+  onBrainstormClick(canvasView: any) {
+    // @ts-ignore
+    const canvas = canvasView.canvas;
+    if (!canvas) {
+      console.log("Canvas not found.");
+      return;
+    }
+
+    if (canvas.selection.size === 0) {
+      console.log("No node is selected. Creating a new card...");
+
+      const nodeCount = canvas.nodes.size;
+
+      let node;
+      const pos = { x: 0, y: 0 }; // your hardcoded fallback
+
+      if (!requireApiVersion("1.1.10")) {
+        node = canvas.createTextNode(pos, { width: 200, height: 100 }, true);
+      } else {
+        node = canvas.createTextNode({
+          pos: { ...pos, width: 200, height: 100 },
+          text: "",
+          focus: true,
+          save: true,
+          size: { ...pos, width: 200, height: 100 }
+        });
+      }
+
+      // if no other nodes exist, color this node red
+      if (nodeCount === 0 && node?.setColor) {
+        node.setColor("#ff0000");
+      }
+
+      canvas.requestSave();
+    }else if (canvas.selection.size === 1) {
+
+      console.log("Exactly one node is selected. Creating child node...");
+      this.createChildNode(canvas);
+
+    }
+  }
+
+
+  createChildNode(canvas: any) {
+    const parent = Array.from(canvas.selection.values())[0] as CanvasNode;
+    const offset = { x: parent.x + 300, y: parent.y };
+
+    let child;
+    if (!requireApiVersion("1.1.10")) {
+      child = canvas.createTextNode(offset, { width: 200, height: 100 }, true);
+    } else {
+      child = canvas.createTextNode({
+        pos: { ...offset, width: 200, height: 100 },
+        text: "",
+        focus: true,
+        save: true,
+        size: { ...offset, width: 200, height: 100 }
+      });
+    }
+
+    this.createEdge(parent, child, canvas);
+    canvas.requestSave();
+  }
+
+  createEdge = async (node1: any, node2: any, canvas: any) => {
+
+	addEdge(canvas, random(16), {
+		fromOrTo: "from",
+		side: "right",
+		node: node1
+	}, {
+		fromOrTo: "to",
+		side: "left",
+		node: node2
+	});
+
+};
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
-}
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
-
-	async onload() {
-		await this.loadSettings();
-
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
-
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-			}
-		});
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-	}
-
-	onunload() {
-
-	}
-
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-	}
-
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
-}
-
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
-
-	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
-}
-
-class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
-
-	constructor(app: App, plugin: MyPlugin) {
-		super(app, plugin);
-		this.plugin = plugin;
-	}
-
-	display(): void {
-		const {containerEl} = this;
-
-		containerEl.empty();
-
-		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
-				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
-					await this.plugin.saveSettings();
-				}));
-	}
-}
